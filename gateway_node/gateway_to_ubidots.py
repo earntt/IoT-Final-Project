@@ -200,7 +200,7 @@ def apply_actuators(status):
 # Logger (DB)
 # ---------------------------
 def log_sample(ts, temp, hum, btn, movement_abn, sound, person, status):
-    cur.execute("""INSERT INTO samples VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+    cur.execute("""INSERT INTO samples VALUES (?,?,?,?,?,?,?,?)""",
                 (ts,
                  temp,
                  hum,
