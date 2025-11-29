@@ -4,7 +4,6 @@
 #include "Wire.h"
 #include "MPU6050.h"
 #include "esp_log.h"
-#include <PulseSensorPlayground.h>
 
 // ======================= CONFIGURATION =======================
 const char* ssid = "whanwhan";
@@ -15,7 +14,6 @@ const int mqtt_port = 1883;
 // --- Pin Definitions ---
 #define DHTPIN 12
 #define BUTTON_PIN 13
-#define HR_PIN 32
 #define SDA_PIN 21
 #define SCL_PIN 22
 #define DHTTYPE DHT11
@@ -25,11 +23,6 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 DHT dht(DHTPIN, DHTTYPE);
 MPU6050 mpu;
-PulseSensorPlayground pulseSensor;
-
-// --- Heart Rate Variables ---
-int Threshold = 550;
-int hrBPM = 0;
 
 // --- Non-blocking MQTT reconnect ---
 long lastReconnectAttempt = 0;
@@ -67,8 +60,6 @@ void loop() {
   float humidity = dht.readHumidity();
   int buttonState = digitalRead(BUTTON_PIN);
 
-  calculateHeartRate();
-
   int16_t gx, gy, gz;
   mpu.getRotation(&gx, &gy, &gz);
 
@@ -82,7 +73,6 @@ void loop() {
     payload += "\"temperature\":" + String(temp, 1) + ",";
     payload += "\"humidity\":" + String(humidity, 1) + ",";
     payload += "\"buttonPressed\":" + String(buttonState == HIGH ? "true" : "false") + ",";
-    payload += "\"heartRate\":" + String(hrBPM) + ",";
     payload += "\"abnormalMovement\":" + String(isAbnormal ? "true" : "false");
     payload += "}";
 
@@ -99,14 +89,9 @@ void initializeSensors() {
   Serial.println("Initializing sensors...");
   dht.begin();
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-  pinMode(HR_PIN, INPUT);
   Wire.begin(SDA_PIN, SCL_PIN);
   mpu.initialize();
   Serial.println(mpu.testConnection() ? "MPU6050 OK" : "MPU6050 FAILED");
-
-  pulseSensor.analogInput(HR_PIN);   
-  pulseSensor.setThreshold(Threshold);
-  Serial.println(pulseSensor.begin() ? "HR OK" : "HR FAILED");
 }
 
 void connectWiFi() {
@@ -134,10 +119,4 @@ bool reconnectMQTT() {
     Serial.println(" try again in 5 seconds");
   }
   return client.connected();
-}
-
-void calculateHeartRate() {
-  hrBPM = pulseSensor.getBeatsPerMinute();
-  Serial.print("BPM: ");
-  Serial.println(hrBPM);
 }
