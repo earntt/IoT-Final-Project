@@ -7,6 +7,7 @@ import sqlite3
 import cv2
 import numpy as np
 from datetime import datetime
+from person_detector import PersonDetector
 
 # ---------------------------
 # Config
@@ -83,26 +84,45 @@ current_status = "NORMAL"
 lock = threading.Lock()
 
 # ---------------------------
-# Camera / Person detection thread
+# Camera / Person detection using PersonDetector
 # ---------------------------
+detector = None
+
 def person_detector_thread():
-    global person_present
-    # ใช้ Haar cascade fullbody แบบง่าย ถ้าต้องการแม่นขึ้นให้ใช้ object detection model
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_fullbody.xml")
-    cap = cv2.VideoCapture(0)  # camera index 0
-    if not cap.isOpened():
-        print("WARNING: Camera not opened. Person detection disabled.")
-        return
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            person_present = 0
+    global person_present, detector
+    
+    # สร้าง PersonDetector object
+    try:
+        detector = PersonDetector(model_path='yolo11n.pt')
+        detector.start()  # เริ่ม background thread ของ detector
+        print("[GATEWAY] PersonDetector initialized successfully")
+    except Exception as e:
+        print(f"[GATEWAY] Failed to initialize PersonDetector: {e}")
+        print("[GATEWAY] Falling back to simple detection")
+        # Fallback ใช้ Haar cascade เหมือนเดิม
+        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_fullbody.xml")
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            print("WARNING: Camera not opened. Person detection disabled.")
+            return
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                person_present = 0
+                time.sleep(PERSON_DETECT_INTERVAL)
+                continue
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            people = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(60,60))
+            with lock:
+                person_present = 1 if len(people) > 0 else 0
             time.sleep(PERSON_DETECT_INTERVAL)
-            continue
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        people = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(60,60))
-        with lock:
-            person_present = 1 if len(people) > 0 else 0
+        return
+    
+    # ใช้ PersonDetector (YOLO) - อ่านค่าจาก detector.person_detected
+    while True:
+        if detector:
+            with lock:
+                person_present = 1 if detector.person_detected > 0 else 0
         time.sleep(PERSON_DETECT_INTERVAL)
 
 # ---------------------------
@@ -239,8 +259,13 @@ def main_loop():
     except KeyboardInterrupt:
         print("Stopping...")
     finally:
+        # ทำความสะอาด PersonDetector
+        if detector:
+            detector.stop()
+            print("[GATEWAY] PersonDetector stopped")
         GPIO.cleanup()
         conn.close()
+        print("[GATEWAY] System shutdown complete")
 
 # ---------------------------
 # Start threads & MQTT
