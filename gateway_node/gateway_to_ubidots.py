@@ -54,10 +54,8 @@ CREATE TABLE IF NOT EXISTS samples (
     ts TEXT,
     temperature REAL,
     humidity REAL,
-    mpu_ax REAL, mpu_ay REAL, mpu_az REAL,
-    mpu_gx REAL, mpu_gy REAL, mpu_gz REAL,
     button INTEGER,
-    movement_abnormal INTEGER,
+    abnormal_movement INTEGER,
     sound_alert INTEGER,
     person_present INTEGER,
     status TEXT
@@ -71,12 +69,8 @@ conn.commit()
 latest = {
     "temperature": None,
     "humidity": None,
-    "mpu": {
-        "ax": None, "ay": None, "az": None,
-        "gx": None, "gy": None, "gz": None
-    },
     "button": 0,
-    "movement_abnormal": 0
+    "abnormalMovement": 0
 }
 sound_alert = 0
 person_present = 0
@@ -155,29 +149,22 @@ def on_message(client, userdata, msg):
         print("Invalid JSON payload:", e)
         return
 
-    # payload expected structure: { "temperature":..., "humidity":..., "mpu":{...}, "button":0/1, "movement_abnormal":0/1 }
+    # payload expected structure: { "temperature":..., "humidity":..., "mpu":{...}, "button":0/1, "abnormal_movement":0/1 }
     with lock:
         latest["temperature"] = payload.get("temperature", latest["temperature"])
         latest["humidity"] = payload.get("humidity", latest["humidity"])
-        mpu = payload.get("mpu", {})
-        latest["mpu"]["ax"] = mpu.get("ax", latest["mpu"]["ax"])
-        latest["mpu"]["ay"] = mpu.get("ay", latest["mpu"]["ay"])
-        latest["mpu"]["az"] = mpu.get("az", latest["mpu"]["az"])
-        latest["mpu"]["gx"] = mpu.get("gx", latest["mpu"]["gx"])
-        latest["mpu"]["gy"] = mpu.get("gy", latest["mpu"]["gy"])
-        latest["mpu"]["gz"] = mpu.get("gz", latest["mpu"]["gz"])
-        latest["button"] = int(payload.get("button", latest["button"]))
-        latest["movement_abnormal"] = int(payload.get("movement_abnormal", latest["movement_abnormal"]))
+        latest["button"] = int(payload.get("buttonPressed", latest["button"]))
+        latest["abnormal_movement"] = int(payload.get("abnormalMovement", latest["abnormal_movement"]))
 
 # ---------------------------
 # Fusion logic (ตรงตามที่คุณขอ)
 # ---------------------------
-def evaluate_fusion(btn, movement_abnormal, person_present, sound_alert, temp, hum):
+def evaluate_fusion(btn, abnormal_movement, person_present, sound_alert, temp, hum):
     # IF button == 1 → EMERGENCY
     if btn == 1:
         return "EMERGENCY"
-    # ELIF movement_abnormal == 1 AND person_present == 1 → EMERGENCY
-    if movement_abnormal == 1 and person_present == 1:
+    # ELIF abnormal_movement == 1 AND person_present == 1 → EMERGENCY
+    if abnormal_movement == 1 and person_present == 1:
         return "EMERGENCY"
     # ELIF sound_alert == 1 → WARNING
     if sound_alert == 1:
@@ -212,13 +199,11 @@ def apply_actuators(status):
 # ---------------------------
 # Logger (DB)
 # ---------------------------
-def log_sample(ts, temp, hum, mpu, btn, movement_abn, sound, person, status):
+def log_sample(ts, temp, hum, btn, movement_abn, sound, person, status):
     cur.execute("""INSERT INTO samples VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (ts,
                  temp,
                  hum,
-                 mpu.get("ax"), mpu.get("ay"), mpu.get("az"),
-                 mpu.get("gx"), mpu.get("gy"), mpu.get("gz"),
                  btn,
                  movement_abn,
                  sound,
@@ -237,9 +222,8 @@ def main_loop():
             with lock:
                 temp = latest["temperature"]
                 hum = latest["humidity"]
-                mpu = latest["mpu"].copy()
                 btn = latest["button"]
-                movement_abn = latest["movement_abnormal"]
+                movement_abn = latest["abnormal_movement"]
                 sound = sound_alert
                 person = person_present
 
@@ -250,7 +234,7 @@ def main_loop():
 
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             # log to DB
-            log_sample(ts, temp, hum, mpu, btn, movement_abn, sound, person, status)
+            log_sample(ts, temp, hum, btn, movement_abn, sound, person, status)
 
             # optional: print short summary
             print(f"{ts} | status={status} | btn={btn} move={movement_abn} person={person} sound={sound} temp={temp} hum={hum}")
