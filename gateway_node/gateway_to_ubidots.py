@@ -1,191 +1,265 @@
 import paho.mqtt.client as mqtt
 import RPi.GPIO as GPIO
-import time
 import json
-import queue
-from queue import Queue
+import time
+import threading
+import sqlite3
+import cv2
+import numpy as np
+from datetime import datetime
 
-# ======================= CONFIGURATION =======================
-# --- Ubidots Configuration ---
-UBIDOTS_TOKEN = "BBUS-l5K2cckgSINlQm6LJrwiDyf6JCXtpk"
-UBIDOTS_DEVICE_LABEL = "raspberrypi"
-UBIDOTS_BROKER = "industrial.api.ubidots.com"
-UBIDOTS_PORT = 1883
+# ---------------------------
+# Config
+# ---------------------------
+MQTT_BROKER = "localhost"
+MQTT_PORT = 1883
+MQTT_TOPIC = "esp32/data"  # รับ JSON จาก ESP32
 
-# --- Local MQTT Broker Configuration (สำหรับรับข้อมูลจาก ESP32) ---
-LOCAL_BROKER = "localhost"
-LOCAL_PORT = 1883
+KY037_PIN = 22         # Digital output of KY-037 -> GPIO22 (ปรับตามต่อจริง)
+LED_PIN = 17           # สถานะ LED
+BUZZER_PIN = 27        # Buzzer (ใช้ PWM)
 
-# --- GPIO Pins ---
-LED_PIN = 17
-BUZZER_PIN = 27
+DB_PATH = "/home/pi/gateway_sensor_log.db"
 
-FREQUENCY = 1000
+# Safe ranges (ปรับได้)
+TEMP_SAFE_MIN = 15.0
+TEMP_SAFE_MAX = 37.0
+HUM_SAFE_MIN  = 20.0
+HUM_SAFE_MAX  = 70.0
 
-# --- Alert Settings ---
-ALERT_DURATION_SECONDS = 5
+# Buzzer PWM params
+BUZZER_FREQ = 1000
 
-# ======================= INITIALIZATION =======================
-# --- Initialize GPIO ---
+# Camera detection params
+PERSON_DETECT_INTERVAL = 1.0  # วินาทีระหว่างการตรวจซ้ำ
+
+# ---------------------------
+# GPIO init
+# ---------------------------
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
+GPIO.setup(KY037_PIN, GPIO.IN)           # KY-037 digital output
 GPIO.setup(LED_PIN, GPIO.OUT, initial=GPIO.LOW)
 GPIO.setup(BUZZER_PIN, GPIO.OUT, initial=GPIO.LOW)
+buzzer_pwm = GPIO.PWM(BUZZER_PIN, BUZZER_FREQ)
 
-pwm = GPIO.PWM(BUZZER_PIN, FREQUENCY)
+# ---------------------------
+# DB init (SQLite)
+# ---------------------------
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+cur = conn.cursor()
+cur.execute("""
+CREATE TABLE IF NOT EXISTS samples (
+    ts TEXT,
+    temperature REAL,
+    humidity REAL,
+    mpu_ax REAL, mpu_ay REAL, mpu_az REAL,
+    mpu_gx REAL, mpu_gy REAL, mpu_gz REAL,
+    button INTEGER,
+    movement_abnormal INTEGER,
+    sound_alert INTEGER,
+    person_present INTEGER,
+    status TEXT
+)
+""")
+conn.commit()
 
-# --- สร้าง Queue เพื่อเป็นตัวกลางสื่อสารระหว่าง Threads ---
-data_queue = Queue()
-
-# --- ตัวแปรสำหรับจัดการสถานะ Alert แบบ Non-Blocking ---
-alert_active = False
-alert_start_time = 0
-
-# --- เก็บสถานะล่าสุดของแต่ละ topic เพื่อป้องกันการส่งซ้ำโดยไม่จำเป็น ---
-latest_data = {
+# ---------------------------
+# Global state
+# ---------------------------
+latest = {
     "temperature": None,
     "humidity": None,
-    "heart_rate": None,
+    "mpu": {
+        "ax": None, "ay": None, "az": None,
+        "gx": None, "gy": None, "gz": None
+    },
     "button": 0,
-    "abnormal_movement": 0
+    "movement_abnormal": 0
 }
-# --- เก็บค่าที่ส่งล่าสุดไป Ubidots ---
-last_sent = {
-    "temperature": None,
-    "humidity": None,
-    "heart_rate": None
-}
-# --- สำหรับจำเวลาที่ส่ง alert ล่าสุด แยกปุ่มและ movement ---
-button_alert_active = False
-button_alert_hold_until = 0
-movement_alert_active = False
-movement_alert_hold_until = 0
+sound_alert = 0
+person_present = 0
+current_status = "NORMAL"
+lock = threading.Lock()
 
-# ======================= MQTT CALLBACKS =======================
-
-def on_local_connect(client, userdata, flags, rc):
-    """Callback เมื่อเชื่อมต่อ Local Broker (รับข้อมูลจาก ESP32) สำเร็จ"""
-    if rc == 0:
-        # Subscribe ทุก topic
-        client.subscribe("esp32/temperature")
-        client.subscribe("esp32/humidity")
-        client.subscribe("esp32/heart_rate")
-        client.subscribe("esp32/button")
-        client.subscribe("esp32/abnormal_movement")
-        print("Connected to LOCAL MQTT Broker successfully!")
-    else:
-        print(f"Failed to connect to LOCAL Broker, return code {rc}")
-
-def on_local_message(client, userdata, msg):
-    topic = msg.topic
-    payload = msg.payload.decode('utf-8')
-    if topic == "esp32/temperature":
-        latest_data["temperature"] = float(payload)
-    elif topic == "esp32/humidity":
-        latest_data["humidity"] = float(payload)
-    elif topic == "esp32/heart_rate":
-        latest_data["heart_rate"] = float(payload)
-    elif topic == "esp32/button":
-        latest_data["button"] = int(payload)
-    elif topic == "esp32/abnormal_movement":
-        latest_data["abnormal_movement"] = int(payload)
-
-# ======================= MAIN PROGRAM EXECUTION =======================
-
-# --- ตั้งค่า Local MQTT Client (สำหรับรับข้อมูล) ---
-local_client = mqtt.Client(client_id="Pi_Gateway_Subscriber")
-local_client.on_connect = on_local_connect
-local_client.on_message = on_local_message
-local_client.connect("localhost", 1883, 60)
-local_client.loop_start()
-
-# --- ตั้งค่า Ubidots MQTT Client (สำหรับส่งข้อมูล) ---
-ubidots_client = mqtt.Client(client_id="Pi_Gateway_Publisher")
-ubidots_client.username_pw_set(UBIDOTS_TOKEN, password="")
-
-ALERT_DURATION_SECONDS = 5
-alert_active = False
-alert_start_time = 0
-
-# --- เชื่อมต่อกับ Brokers ---
-try:
-    print("Connecting to LOCAL Broker...")
-    local_client.connect(LOCAL_BROKER, LOCAL_PORT, 60)
-    local_client.loop_start()  # รันใน background thread
-
-    print("Connecting to UBIDOTS Broker...")
-    ubidots_client.connect(UBIDOTS_BROKER, UBIDOTS_PORT, 60)
-    ubidots_client.loop_start() # รันใน background thread
-
-except Exception as e:
-    print(f"FATAL: Could not connect to a broker. Error: {e}")
-    exit()
-
-print("\nSystem Gateway Started. Waiting for data from ESP32...")
-print("Press Ctrl+C to exit.")
-
-try:
+# ---------------------------
+# Camera / Person detection thread
+# ---------------------------
+def person_detector_thread():
+    global person_present
+    # ใช้ Haar cascade fullbody แบบง่าย ถ้าต้องการแม่นขึ้นให้ใช้ object detection model
+    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_fullbody.xml")
+    cap = cv2.VideoCapture(0)  # camera index 0
+    if not cap.isOpened():
+        print("WARNING: Camera not opened. Person detection disabled.")
+        return
     while True:
-        # --- Publish sensor data เฉพาะเมื่อค่ามีการเปลี่ยนแปลง ---
-        if latest_data["temperature"] is not None and latest_data["temperature"] != last_sent["temperature"]:
-            topic = f"/v1.6/devices/{UBIDOTS_DEVICE_LABEL}/temperature"
-            ubidots_client.publish(topic, str(latest_data["temperature"]))
-            last_sent["temperature"] = latest_data["temperature"]
-        if latest_data["humidity"] is not None and latest_data["humidity"] != last_sent["humidity"]:
-            topic = f"/v1.6/devices/{UBIDOTS_DEVICE_LABEL}/humidity"
-            ubidots_client.publish(topic, str(latest_data["humidity"]))
-            last_sent["humidity"] = latest_data["humidity"]
-        if latest_data["heart_rate"] is not None and latest_data["heart_rate"] != last_sent["heart_rate"]:
-            topic = f"/v1.6/devices/{UBIDOTS_DEVICE_LABEL}/heart-rate"
-            ubidots_client.publish(topic, str(latest_data["heart_rate"]))
-            last_sent["heart_rate"] = latest_data["heart_rate"]
+        ret, frame = cap.read()
+        if not ret:
+            person_present = 0
+            time.sleep(PERSON_DETECT_INTERVAL)
+            continue
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        people = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=3, minSize=(60,60))
+        with lock:
+            person_present = 1 if len(people) > 0 else 0
+        time.sleep(PERSON_DETECT_INTERVAL)
 
-        now = time.time()
-        # --- กรณีปุ่มกด ---
-        if latest_data["button"] == 1 and not button_alert_active:
-            print("BUTTON ALERT! LED/BUZZER ON, send 1 to Ubidots (button-pressed)")
-            button_alert_active = True
-            button_alert_hold_until = now + ALERT_DURATION_SECONDS
-            GPIO.output(LED_PIN, GPIO.HIGH)
-            pwm.start(80)
-            topic_btn = f"/v1.6/devices/{UBIDOTS_DEVICE_LABEL}/button-pressed"
-            ubidots_client.publish(topic_btn, "1")
-        if button_alert_active and now < button_alert_hold_until:
-            topic_btn = f"/v1.6/devices/{UBIDOTS_DEVICE_LABEL}/button-pressed"
-            ubidots_client.publish(topic_btn, "1")
-        if button_alert_active and now >= button_alert_hold_until:
-            print("Button alert finished. LED/BUZZER OFF, send 0 to Ubidots (button-pressed)")
-            GPIO.output(LED_PIN, GPIO.LOW)
-            pwm.stop()
-            topic_btn = f"/v1.6/devices/{UBIDOTS_DEVICE_LABEL}/button-pressed"
-            ubidots_client.publish(topic_btn, "0")
-            button_alert_active = False
+# ---------------------------
+# KY-037 reading thread (digital pin)
+# ---------------------------
+def ky037_watcher_thread():
+    global sound_alert
+    while True:
+        val = GPIO.input(KY037_PIN)  # 0 or 1
+        with lock:
+            sound_alert = 1 if val == 1 else 0
+        # short sleep to avoid busy loop
+        time.sleep(0.05)
 
-        # --- กรณี movement ผิดปกติ ---
-        if latest_data["abnormal_movement"] == 1 and not movement_alert_active:
-            print("MOVEMENT ALERT! LED/BUZZER ON, send 1 to Ubidots (movement)")
-            movement_alert_active = True
-            movement_alert_hold_until = now + ALERT_DURATION_SECONDS
-            GPIO.output(LED_PIN, GPIO.HIGH)
-            pwm.start(80)
-            topic_abn = f"/v1.6/devices/{UBIDOTS_DEVICE_LABEL}/movement"
-            ubidots_client.publish(topic_abn, "1")
-        if movement_alert_active and now < movement_alert_hold_until:
-            topic_abn = f"/v1.6/devices/{UBIDOTS_DEVICE_LABEL}/movement"
-            ubidots_client.publish(topic_abn, "1")
-        if movement_alert_active and now >= movement_alert_hold_until:
-            print("Movement alert finished. LED/BUZZER OFF, send 0 to Ubidots (movement)")
-            GPIO.output(LED_PIN, GPIO.LOW)
-            pwm.stop()
-            topic_abn = f"/v1.6/devices/{UBIDOTS_DEVICE_LABEL}/movement"
-            ubidots_client.publish(topic_abn, "0")
-            movement_alert_active = False
+# ---------------------------
+# MQTT callbacks
+# ---------------------------
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("Connected to MQTT broker")
+        client.subscribe(MQTT_TOPIC)
+    else:
+        print("MQTT connect failed rc=", rc)
 
-        time.sleep(0.2)
-except KeyboardInterrupt:
-    print("\nScript terminated by user.")
-finally:
-    local_client.loop_stop()
-    ubidots_client.loop_stop()
-    GPIO.cleanup()
-    print("System shut down cleanly.")
+def on_message(client, userdata, msg):
+    global latest
+    try:
+        payload = json.loads(msg.payload.decode())
+    except Exception as e:
+        print("Invalid JSON payload:", e)
+        return
+
+    # payload expected structure: { "temperature":..., "humidity":..., "mpu":{...}, "button":0/1, "movement_abnormal":0/1 }
+    with lock:
+        latest["temperature"] = payload.get("temperature", latest["temperature"])
+        latest["humidity"] = payload.get("humidity", latest["humidity"])
+        mpu = payload.get("mpu", {})
+        latest["mpu"]["ax"] = mpu.get("ax", latest["mpu"]["ax"])
+        latest["mpu"]["ay"] = mpu.get("ay", latest["mpu"]["ay"])
+        latest["mpu"]["az"] = mpu.get("az", latest["mpu"]["az"])
+        latest["mpu"]["gx"] = mpu.get("gx", latest["mpu"]["gx"])
+        latest["mpu"]["gy"] = mpu.get("gy", latest["mpu"]["gy"])
+        latest["mpu"]["gz"] = mpu.get("gz", latest["mpu"]["gz"])
+        latest["button"] = int(payload.get("button", latest["button"]))
+        latest["movement_abnormal"] = int(payload.get("movement_abnormal", latest["movement_abnormal"]))
+
+# ---------------------------
+# Fusion logic (ตรงตามที่คุณขอ)
+# ---------------------------
+def evaluate_fusion(btn, movement_abnormal, person_present, sound_alert, temp, hum):
+    # IF button == 1 → EMERGENCY
+    if btn == 1:
+        return "EMERGENCY"
+    # ELIF movement_abnormal == 1 AND person_present == 1 → EMERGENCY
+    if movement_abnormal == 1 and person_present == 1:
+        return "EMERGENCY"
+    # ELIF sound_alert == 1 → WARNING
+    if sound_alert == 1:
+        return "WARNING"
+    # ELIF temp/humidity นอกช่วงปลอดภัย → WARNING
+    if temp is not None:
+        if not (TEMP_SAFE_MIN <= temp <= TEMP_SAFE_MAX):
+            return "WARNING"
+    if hum is not None:
+        if not (HUM_SAFE_MIN <= hum <= HUM_SAFE_MAX):
+            return "WARNING"
+    # ELSE → NORMAL
+    return "NORMAL"
+
+# ---------------------------
+# Actuator control
+# ---------------------------
+def apply_actuators(status):
+    if status == "NORMAL":
+        GPIO.output(LED_PIN, GPIO.LOW)
+        try:
+            buzzer_pwm.stop()
+        except Exception:
+            pass
+    elif status == "WARNING":
+        GPIO.output(LED_PIN, GPIO.HIGH)
+        buzzer_pwm.start(30)   # gentle beep
+    elif status == "EMERGENCY":
+        GPIO.output(LED_PIN, GPIO.HIGH)
+        buzzer_pwm.start(90)   # loud continuous or high duty
+
+# ---------------------------
+# Logger (DB)
+# ---------------------------
+def log_sample(ts, temp, hum, mpu, btn, movement_abn, sound, person, status):
+    cur.execute("""INSERT INTO samples VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (ts,
+                 temp,
+                 hum,
+                 mpu.get("ax"), mpu.get("ay"), mpu.get("az"),
+                 mpu.get("gx"), mpu.get("gy"), mpu.get("gz"),
+                 btn,
+                 movement_abn,
+                 sound,
+                 person,
+                 status))
+    conn.commit()
+
+# ---------------------------
+# Main loop
+# ---------------------------
+def main_loop():
+    global current_status
+    print("Starting main loop...")
+    try:
+        while True:
+            with lock:
+                temp = latest["temperature"]
+                hum = latest["humidity"]
+                mpu = latest["mpu"].copy()
+                btn = latest["button"]
+                movement_abn = latest["movement_abnormal"]
+                sound = sound_alert
+                person = person_present
+
+            status = evaluate_fusion(btn, movement_abn, person, sound, temp, hum)
+            # If status changed we could also publish or take extra action
+            current_status = status
+            apply_actuators(status)
+
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # log to DB
+            log_sample(ts, temp, hum, mpu, btn, movement_abn, sound, person, status)
+
+            # optional: print short summary
+            print(f"{ts} | status={status} | btn={btn} move={movement_abn} person={person} sound={sound} temp={temp} hum={hum}")
+
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("Stopping...")
+    finally:
+        GPIO.cleanup()
+        conn.close()
+
+# ---------------------------
+# Start threads & MQTT
+# ---------------------------
+if __name__ == "__main__":
+    # start camera thread
+    cam_thread = threading.Thread(target=person_detector_thread, daemon=True)
+    cam_thread.start()
+
+    # start KY-037 watcher
+    ky_thread = threading.Thread(target=ky037_watcher_thread, daemon=True)
+    ky_thread.start()
+
+    # setup mqtt
+    client = mqtt.Client("PiGatewaySubscriber")
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    client.loop_start()
+
+    # run main loop (blocking)
+    main_loop()

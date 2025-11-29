@@ -1,0 +1,16 @@
+# MQTT Communication
+paho-mqtt
+
+# Computer Vision & AI
+opencv-python
+ultralytics
+
+# Hardware Control (GPIO for Raspberry Pi)
+# RPi.GPIO
+
+
+
+#python3 -m venv venv
+#source venv/bin/activate
+
+#pip install -r requirements.txt
