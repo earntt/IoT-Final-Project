@@ -86,11 +86,7 @@ void loop() {
     payload += "\"abnormalMovement\":" + String(isAbnormal ? "true" : "false");
     payload += "}";
 
-    client.publish("esp32/temperature", String(temp, 1).c_str());
-    client.publish("esp32/humidity", String(humidity, 1).c_str());
-    client.publish("esp32/heart_rate", String(hrBPM).c_str());
-    client.publish("esp32/button", buttonState == HIGH ? "1" : "0");
-    client.publish("esp32/abnormal_movement", isAbnormal ? "1" : "0");
+    client.publish("esp32/data", payload);
 
     Serial.println("Published data: " + payload);
   }
