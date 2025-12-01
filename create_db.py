@@ -5,7 +5,7 @@ cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS samples (
-    ts TEXT,
+    timestamp DATE,
     temperature REAL,
     humidity REAL,
     button INTEGER,

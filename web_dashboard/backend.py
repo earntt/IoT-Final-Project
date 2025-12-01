@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import sqlite3
 from datetime import datetime
@@ -7,6 +8,18 @@ import os
 
 app = FastAPI()
 load_dotenv(os.path.join("..\.env"))
+
+origins = [
+    "http://localhost:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 DB_PATH = os.getenv("DB_PATH")
 
@@ -19,7 +32,7 @@ def get_db():
 def get_latest():
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM samples ORDER BY ts DESC LIMIT 1")
+    cur.execute("SELECT * FROM samples ORDER BY timestamp DESC LIMIT 1")
     row = cur.fetchone()
     conn.close()
 
@@ -33,7 +46,7 @@ def get_history():
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT * FROM samples WHERE ts ORDER BY ts ASC",
+        "SELECT * FROM samples WHERE timestamp ORDER BY timestamp ASC",
     )
     rows = cur.fetchall()
     conn.close()
@@ -50,11 +63,11 @@ def insert_sample(
     person: int,
     status: str
 ):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""INSERT INTO samples VALUES (?,?,?,?,?,?,?,?)""",
-                (ts,
+                (timestamp,
                  temp,
                  hum,
                  btn,
@@ -65,4 +78,4 @@ def insert_sample(
     conn.commit()
     conn.close()
 
-    return {"message": "sample inserted", "ts": ts}
+    return {"message": "sample inserted", "timestamp": timestamp}
