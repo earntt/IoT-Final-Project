@@ -6,9 +6,12 @@
 #include "esp_log.h"
 
 // ======================= CONFIGURATION =======================
-const char* ssid = "whanwhan";
-const char* password = "whanwhanjubjub";
-const char* mqtt_server = "172.20.10.3";
+// const char* ssid = "whanwhan";
+// const char* password = "whanwhanjubjub";
+// const char* mqtt_server = "172.20.10.3";
+const char* ssid = "Benya_5G";
+const char* password = "0868963005";
+const char* mqtt_server = "192.168.1.186";
 const int mqtt_port = 1883;
 
 // --- Pin Definitions ---
