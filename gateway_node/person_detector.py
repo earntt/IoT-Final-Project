@@ -5,21 +5,20 @@ import psutil
 from ultralytics import YOLO
 
 class PersonDetector:
-    def __init__(self, model_path='yolo11n.pt'):
+    def __init__(self, model_path='yolov11n.pt'):
         print(f"[VISION] Loading YOLO model ({model_path})...")
         self.model = YOLO(model_path)
-
+        
         self.running = False
         self.person_detected = 0 
         self.thread = None
         self.cap = None
 
-        # --- ส่วน Performance & Latency ---
+        # --- เก็บสถิติ ---
         self.stats = {
             "start_time": None,
             "total_frames": 0,
-            "total_inference_time_ms": 0,  # เวลาที่ YOLO ใช้ประมวลผล (Inference)
-            "total_process_time_ms": 0,    # เวลาตั้งแต่รับภาพจนวาดเสร็จ (System Latency)
+            "total_inference_time_ms": 0,
             "max_inference_ms": 0,
             "min_inference_ms": 9999,
         }
@@ -29,18 +28,17 @@ class PersonDetector:
             "start_time": time.time(),
             "total_frames": 0,
             "total_inference_time_ms": 0,
-            "total_process_time_ms": 0,
             "max_inference_ms": 0,
             "min_inference_ms": 9999,
         }
 
     def detect_frame(self, frame, draw=False):
-        # เริ่มจับเวลา System Latency (Processing)
-        process_start = time.time()
-        
-        # เริ่มจับเวลา Model Inference
+        # เริ่มจับเวลา Model Inference (เฉพาะตอน AI คิด)
         inference_start = time.time()
+        
+        # Run YOLO
         results = self.model(frame, verbose=False, conf=0.5, classes=[0])
+        
         inference_end = time.time()
         
         # คำนวณ Inference Time (ms)
@@ -54,14 +52,9 @@ class PersonDetector:
             if draw and person_count > 0:
                 annotated_frame = r.plot()
         
-        # จบจับเวลา System Latency
-        process_end = time.time()
-        process_ms = (process_end - process_start) * 1000
-
         # --- บันทึกสถิติ ---
         self.stats["total_frames"] += 1
         self.stats["total_inference_time_ms"] += inference_ms
-        self.stats["total_process_time_ms"] += process_ms
         
         if inference_ms > self.stats["max_inference_ms"]: self.stats["max_inference_ms"] = inference_ms
         if inference_ms < self.stats["min_inference_ms"]: self.stats["min_inference_ms"] = inference_ms
@@ -69,7 +62,7 @@ class PersonDetector:
         return person_count, annotated_frame
 
     def print_performance_report(self):
-        """ แสดงรายงาน Model Performance & Latency """
+        """ แสดงรายงานเฉพาะ Model Performance & Resource Usage """
         duration = time.time() - self.stats["start_time"]
         total_frames = self.stats["total_frames"]
         
@@ -78,27 +71,22 @@ class PersonDetector:
         # คำนวณค่าเฉลี่ย
         avg_fps = total_frames / duration
         avg_inference = self.stats["total_inference_time_ms"] / total_frames
-        avg_latency = self.stats["total_process_time_ms"] / total_frames
         
         # อ่านค่า Hardware
         cpu_usage = psutil.cpu_percent()
         ram_usage = psutil.virtual_memory().percent
 
         print("\n" + "="*60)
-        print("PERFORMANCE & LATENCY REPORT")
+        print("📊  PERFORMANCE REPORT (ผลการทดสอบประสิทธิภาพ)")
         print("="*60)
         
-        print(f"1. MODEL PERFORMANCE (ประสิทธิภาพโมเดล)")
+        print(f"1. MODEL PERFORMANCE (โมเดล YOLO)")
         print(f"   - Average FPS:           {avg_fps:.2f} frames/sec")
-        print(f"   - Inference Time (Avg):  {avg_inference:.2f} ms (เวลาที่ AI ใช้คิด)")
+        print(f"   - Inference Time (Avg):  {avg_inference:.2f} ms")
         print(f"   - Inference Time (Max):  {self.stats['max_inference_ms']:.2f} ms")
         print(f"   - Inference Time (Min):  {self.stats['min_inference_ms']:.2f} ms")
         
-        print(f"\n2. SYSTEM LATENCY (ความหน่วงระบบ)")
-        print(f"   - Processing Latency:    {avg_latency:.2f} ms (รวมวาดภาพ+Logic)")
-        print(f"   - End-to-End Delay:      ~{avg_latency + 10:.2f} ms (ประมาณการรวมกล้อง)")
-
-        print(f"\n3. RESOURCE USAGE (ทรัพยากรเครื่อง)")
+        print(f"\n2. RESOURCE USAGE (ทรัพยากรเครื่อง)")
         print(f"   - CPU Usage:             {cpu_usage}%")
         print(f"   - RAM Usage:             {ram_usage}%")
         print("="*60 + "\n")
@@ -117,7 +105,7 @@ class PersonDetector:
         self.running = False
         if self.thread: self.thread.join()
         if self.cap: self.cap.release()
-        self.print_performance_report()
+        self.print_performance_report() # <--- สรุปผลตอนจบ
         print("[VISION] Stopped.")
 
     def _process_thread(self):
@@ -135,7 +123,7 @@ class PersonDetector:
 # --- Debug Mode ---
 if __name__ == "__main__":
     print("Running Debug Mode... Press 'q' to stop.")
-    detector = PersonDetector(model_path='yolo11n.pt') # หรือ yolov8n.pt
+    detector = PersonDetector(model_path='yolo11n.pt') 
     detector.reset_stats()
     
     cap = cv2.VideoCapture(0)
