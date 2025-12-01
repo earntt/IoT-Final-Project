@@ -166,6 +166,8 @@ def evaluate_fusion(btn, abnormal_movement, person_present, sound_alert, temp, h
     # ELIF abnormal_movement == 1 AND person_present == 1 → EMERGENCY
     if abnormal_movement == 1 and person_present == 1:
         return "EMERGENCY"
+    if person_present == 0:
+        return "EMERGENCY"
     # ELIF sound_alert == 1 → WARNING
     if sound_alert == 1:
         return "WARNING"
