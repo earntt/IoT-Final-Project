@@ -51,7 +51,7 @@ conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 cur.execute("""
 CREATE TABLE IF NOT EXISTS samples (
-    ts TEXT,
+    timestamp DATE,
     temperature REAL,
     humidity REAL,
     button INTEGER,
@@ -199,9 +199,9 @@ def apply_actuators(status):
 # ---------------------------
 # Logger (DB)
 # ---------------------------
-def log_sample(ts, temp, hum, btn, movement_abn, sound, person, status):
+def log_sample(timestamp, temp, hum, btn, movement_abn, sound, person, status):
     cur.execute("""INSERT INTO samples VALUES (?,?,?,?,?,?,?,?)""",
-                (ts,
+                (timestamp,
                  temp,
                  hum,
                  btn,
@@ -232,12 +232,12 @@ def main_loop():
             current_status = status
             apply_actuators(status)
 
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = datetime.now()
             # log to DB
-            log_sample(ts, temp, hum, btn, movement_abn, sound, person, status)
+            log_sample(timestamp, temp, hum, btn, movement_abn, sound, person, status)
 
             # optional: print short summary
-            print(f"{ts} | status={status} | btn={btn} move={movement_abn} person={person} sound={sound} temp={temp} hum={hum}")
+            print(f"{timestamp} | status={status} | btn={btn} move={movement_abn} person={person} sound={sound} temp={temp} hum={hum}")
 
             time.sleep(0.5)
     except KeyboardInterrupt:
