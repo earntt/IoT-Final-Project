@@ -4,9 +4,10 @@ paho-mqtt
 # Computer Vision & AI
 opencv-python
 ultralytics
+psutil
 
 # Hardware Control (GPIO for Raspberry Pi)
-# RPi.GPIO
+RPi.GPIO
 
 
 
