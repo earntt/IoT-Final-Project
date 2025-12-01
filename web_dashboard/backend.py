@@ -46,7 +46,7 @@ def get_history():
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        "SELECT * FROM samples WHERE timestamp ORDER BY timestamp ASC",
+        "SELECT * FROM samples WHERE timestamp ORDER BY timestamp DESC",
     )
     rows = cur.fetchall()
     conn.close()
