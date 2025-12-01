@@ -12,7 +12,7 @@ export default function Dashboard() {
     abnormal_movement: false,
     sound_alert: false,
     person_present: false,
-    status: 'online'
+    status: 'NORMAL'
   });
 
   const [history, setHistory] = useState([]);
@@ -49,41 +49,62 @@ export default function Dashboard() {
     return date.toLocaleString();
   };
 
-  const StatusBadge = ({ status }) => (
-    <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
-      status === 'online' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-    }`}>
-      {status.toUpperCase()}
-    </span>
-  );
+  const StatusBadge = ({ status }) => {
+    const statusStyles = {
+      NORMAL: 'bg-green-100 text-green-800',
+      WARNING: 'bg-yellow-100 text-yellow-800',
+      EMERGENCY: 'bg-red-100 text-red-800',
+    };
 
-  const DataCard = ({ icon: Icon, title, value, alert = false, unit = '' }) => (
-    <div className={`bg-white rounded-lg shadow-md p-6 border-l-4 ${
-      alert ? 'border-red-500' : 'border-blue-500'
-    }`}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className={`p-3 rounded-full ${
-            alert ? 'bg-red-100' : 'bg-blue-100'
-          }`}>
-            <Icon className={`w-6 h-6 ${
-              alert ? 'text-red-600' : 'text-blue-600'
-            }`} />
+    const style = statusStyles[status] || 'bg-gray-100 text-gray-800';
+
+    return (
+      <span className={`px-3 py-1 rounded-full text-sm font-semibold ${style}`}>
+        {status.toUpperCase()}
+      </span>
+    );
+  };
+
+
+  const DataCard = ({ icon: Icon, title, value, alert, unit = '' }) => {
+    let borderColor = 'border-blue-500';
+    let bgColor = 'bg-blue-100';
+    let iconColor = 'text-blue-600';
+
+    if (alert === true || alert === 'EMERGENCY') {
+      borderColor = 'border-red-500';
+      bgColor = 'bg-red-100';
+      iconColor = 'text-red-600';
+    } else if (alert === 'WARNING') {
+      borderColor = 'border-yellow-500';
+      bgColor = 'bg-yellow-100';
+      iconColor = 'text-yellow-600';
+    }
+
+    return (
+      <div className={`bg-white rounded-lg shadow-md p-6 border-l-4 ${borderColor}`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className={`p-3 rounded-full ${bgColor}`}>
+              <Icon className={`w-6 h-6 ${iconColor}`} />
+            </div>
+            <div>
+              <p className="text-sm text-gray-600 font-medium">{title}</p>
+              <p className="text-2xl font-bold text-gray-800">
+                {typeof value === 'boolean' ? (value ? 'YES' : 'NO') : value}
+                {unit && <span className="text-lg ml-1">{unit}</span>}
+              </p>
+            </div>
           </div>
-          <div>
-            <p className="text-sm text-gray-600 font-medium">{title}</p>
-            <p className="text-2xl font-bold text-gray-800">
-              {typeof value === 'boolean' ? (value ? 'YES' : 'NO') : value}
-              {unit && <span className="text-lg ml-1">{unit}</span>}
-            </p>
-          </div>
+
+          {(alert === true || alert === 'EMERGENCY') && (
+            <AlertTriangle className="w-8 h-8 text-red-500 animate-pulse" />
+          )}
         </div>
-        {alert && (
-          <AlertTriangle className="w-8 h-8 text-red-500 animate-pulse" />
-        )}
       </div>
-    </div>
-  );
+    );
+  };
+
 
   const DashboardPage = () => (
     <>
@@ -144,13 +165,14 @@ export default function Dashboard() {
           icon={User}
           title="Person Present"
           value={data.person_present}
+          alert={!data.person_alert}
         />
         
         <DataCard
           icon={Power}
           title="Patient Status"
           value={data.status.toUpperCase()}
-          alert={data.status === 'offline'}
+          alert={data.status}
         />
       </div>
 
@@ -236,9 +258,14 @@ export default function Dashboard() {
                   </tr>
                 ) : (
                   history.map((entry, index) => (
-                    <tr key={index} className={`hover:bg-gray-50 ${
-                      (entry.abnormal_movement || entry.sound_alert || entry.button) ? 'bg-red-50' : ''
-                    }`}>
+                    <tr
+                      key={index}
+                      className={`hover:bg-gray-50 ${
+                        entry.status === 'EMERGENCY' ? 'bg-red-50'
+                          : entry.status === 'WARNING'? 'bg-yellow-50'
+                          : ''
+                      }`}
+                    >
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">
                         {formatFullDate(entry.timestamp)}
                       </td>
@@ -277,9 +304,15 @@ export default function Dashboard() {
                         </span>
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm">
-                        <span className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                          entry.status === 'online' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                        }`}>
+                        <span
+                          className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                            {
+                              NORMAL: 'bg-green-100 text-green-800',
+                              WARNING: 'bg-yellow-100 text-yellow-800',
+                              EMERGENCY: 'bg-red-100 text-red-800'
+                            }[entry.status] || 'bg-gray-100 text-gray-800'
+                          }`}
+                        >
                           {entry.status.toUpperCase()}
                         </span>
                       </td>
