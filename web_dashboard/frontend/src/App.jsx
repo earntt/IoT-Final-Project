@@ -165,14 +165,14 @@ export default function Dashboard() {
           icon={User}
           title="Person Present"
           value={data.person_present}
-          alert={!data.person_alert}
+          alert={!data.person_present}
         />
         
         <DataCard
           icon={Power}
           title="Patient Status"
           value={data.status.toUpperCase()}
-          alert={data.status}
+          alert={data.status.toUpperCase()}
         />
       </div>
 
