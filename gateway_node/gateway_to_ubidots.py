@@ -20,7 +20,7 @@ KY037_PIN = 22         # Digital output of KY-037 -> GPIO22 (ปรับตา�
 LED_PIN = 17           # สถานะ LED
 BUZZER_PIN = 27        # Buzzer (ใช้ PWM)
 
-DB_PATH = "/home/pi/gateway_sensor_log.db"
+DB_PATH = "/home/earnt/Final_Project/gateway_sensor_log.db"
 
 # Safe ranges (ปรับได้)
 TEMP_SAFE_MIN = 15.0
@@ -29,7 +29,10 @@ HUM_SAFE_MIN  = 20.0
 HUM_SAFE_MAX  = 70.0
 
 # Buzzer PWM params
-BUZZER_FREQ = 1000
+BUZZER_FREQ = 1800
+
+# Alert duration
+ALERT_DURATION_SECONDS = 3  # Keep alert active for minimum 5 seconds
 
 # Camera detection params
 PERSON_DETECT_INTERVAL = 1.0  # วินาทีระหว่างการตรวจซ้ำ
@@ -39,10 +42,11 @@ PERSON_DETECT_INTERVAL = 1.0  # วินาทีระหว่างการ
 # ---------------------------
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(KY037_PIN, GPIO.IN)           # KY-037 digital output
+GPIO.setup(KY037_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)  # Add pull-down resistor
 GPIO.setup(LED_PIN, GPIO.OUT, initial=GPIO.LOW)
 GPIO.setup(BUZZER_PIN, GPIO.OUT, initial=GPIO.LOW)
 buzzer_pwm = GPIO.PWM(BUZZER_PIN, BUZZER_FREQ)
+buzzer_running = False
 
 # ---------------------------
 # DB init (SQLite)
@@ -70,11 +74,15 @@ latest = {
     "temperature": None,
     "humidity": None,
     "button": 0,
-    "abnormalMovement": 0
+    "abnormal_movement": 0  # Changed from "abnormalMovement" to match usage
 }
 sound_alert = 0
 person_present = 0
 current_status = "NORMAL"
+alert_start_time = 0
+alert_hold_until = 0
+beep_state = False
+beep_last_toggle = 0
 lock = threading.Lock()
 
 # ---------------------------
@@ -125,16 +133,21 @@ def person_detector_thread():
 def ky037_watcher_thread():
     global sound_alert
     while True:
-        val = GPIO.input(KY037_PIN)  # 0 or 1
-        with lock:
-            sound_alert = 1 if val == 1 else 0
+        try:
+            val = GPIO.input(KY037_PIN)  # 0 or 1
+            with lock:
+                sound_alert = 1 if val == 1 else 0
+        except Exception as e:
+            print(f"[KY037] Error reading pin: {e}")
+            time.sleep(1)
+            continue
         # short sleep to avoid busy loop
         time.sleep(0.05)
 
 # ---------------------------
 # MQTT callbacks
 # ---------------------------
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         print("Connected to MQTT broker")
         client.subscribe(MQTT_TOPIC)
@@ -149,11 +162,12 @@ def on_message(client, userdata, msg):
         print("Invalid JSON payload:", e)
         return
 
-    # payload expected structure: { "temperature":..., "humidity":..., "mpu":{...}, "button":0/1, "abnormal_movement":0/1 }
+    # payload expected structure: { "temperature":..., "humidity":..., "buttonPressed":0/1, "abnormalMovement":0/1 }
     with lock:
         latest["temperature"] = payload.get("temperature", latest["temperature"])
         latest["humidity"] = payload.get("humidity", latest["humidity"])
         latest["button"] = int(payload.get("buttonPressed", latest["button"]))
+        # Map camelCase from ESP32 to snake_case for internal use
         latest["abnormal_movement"] = int(payload.get("abnormalMovement", latest["abnormal_movement"]))
 
 # ---------------------------
@@ -182,21 +196,47 @@ def evaluate_fusion(btn, abnormal_movement, person_present, sound_alert, temp, h
     return "NORMAL"
 
 # ---------------------------
-# Actuator control
+# Actuator control (runs in separate thread)
 # ---------------------------
-def apply_actuators(status):
-    if status == "NORMAL":
-        GPIO.output(LED_PIN, GPIO.LOW)
-        try:
-            buzzer_pwm.stop()
-        except Exception:
-            pass
-    elif status == "WARNING":
-        GPIO.output(LED_PIN, GPIO.HIGH)
-        buzzer_pwm.start(30)   # gentle beep
-    elif status == "EMERGENCY":
-        GPIO.output(LED_PIN, GPIO.HIGH)
-        buzzer_pwm.start(90)   # loud continuous or high duty
+def actuator_control_thread():
+    global buzzer_running, current_status
+    last_status = "NORMAL"
+    
+    while True:
+        status = current_status
+        
+        # Only change actuators when status changes
+        if status != last_status:
+            if status == "NORMAL":
+                GPIO.output(LED_PIN, GPIO.LOW)
+                if buzzer_running:
+                    try:
+                        buzzer_pwm.stop()
+                    except:
+                        pass
+                    buzzer_running = False
+                    
+            # elif status == "WARNING":
+            #     GPIO.output(LED_PIN, GPIO.HIGH)
+            #     if not buzzer_running:
+            #         try:
+            #             buzzer_pwm.stop()
+            #         except:
+            #             pass
+            #         buzzer_running = False
+            
+            elif status in ["WARNING", "EMERGENCY"]:
+                GPIO.output(LED_PIN, GPIO.HIGH)
+                if not buzzer_running:
+                    try:
+                        buzzer_pwm.start(75)
+                        buzzer_running = True
+                    except:
+                        pass
+            
+            last_status = status
+        
+        # time.sleep(0.01)  # Fast response time
 
 # ---------------------------
 # Logger (DB)
@@ -217,7 +257,7 @@ def log_sample(timestamp, temp, hum, btn, movement_abn, sound, person, status):
 # Main loop
 # ---------------------------
 def main_loop():
-    global current_status
+    global current_status, alert_start_time, alert_hold_until
     print("Starting main loop...")
     try:
         while True:
@@ -229,10 +269,23 @@ def main_loop():
                 sound = sound_alert
                 person = person_present
 
+            now = time.time()
             status = evaluate_fusion(btn, movement_abn, person, sound, temp, hum)
-            # If status changed we could also publish or take extra action
+            
+            # If alert triggered, set hold duration
+            if status in ["WARNING", "EMERGENCY"]:
+                if current_status == "NORMAL" or now >= alert_hold_until:
+                    alert_start_time = now
+                    alert_hold_until = now + ALERT_DURATION_SECONDS
+                    print(f"[ALERT] {status} triggered - holding for {ALERT_DURATION_SECONDS}s")
+            
+            # Keep alert active until hold time expires
+            if now < alert_hold_until:
+                # Override status to keep alert active
+                if status == "NORMAL":
+                    status = current_status  # Keep previous alert status
+            
             current_status = status
-            apply_actuators(status)
 
             timestamp = datetime.now()
             # log to DB
@@ -249,7 +302,16 @@ def main_loop():
         if detector:
             detector.stop()
             print("[GATEWAY] PersonDetector stopped")
-        GPIO.cleanup()
+        # Stop PWM before cleanup
+        try:
+            if buzzer_running:
+                buzzer_pwm.stop()
+        except Exception as e:
+            print(f"[GATEWAY] PWM stop error (ignored): {e}")
+        try:
+            GPIO.cleanup()
+        except Exception as e:
+            print(f"[GATEWAY] GPIO cleanup error (ignored): {e}")
         conn.close()
         print("[GATEWAY] System shutdown complete")
 
@@ -264,9 +326,16 @@ if __name__ == "__main__":
     # start KY-037 watcher
     ky_thread = threading.Thread(target=ky037_watcher_thread, daemon=True)
     ky_thread.start()
+    
+    # start actuator control thread
+    actuator_thread = threading.Thread(target=actuator_control_thread, daemon=True)
+    actuator_thread.start()
 
-    # setup mqtt
-    client = mqtt.Client("PiGatewaySubscriber")
+    # setup mqtt with callback API version 2
+    client = mqtt.Client(
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        client_id="PiGatewaySubscriber"
+    )
     client.on_connect = on_connect
     client.on_message = on_message
     client.connect(MQTT_BROKER, MQTT_PORT, 60)

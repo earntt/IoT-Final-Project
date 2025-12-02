@@ -104,19 +104,47 @@ class PersonDetector:
     def stop(self):
         self.running = False
         if self.thread: self.thread.join()
-        if self.cap: self.cap.release()
+        if self.cap:
+            try:
+                self.cap.stop()  # For Picamera2
+            except AttributeError:
+                try:
+                    self.cap.release()  # For cv2.VideoCapture
+                except:
+                    pass
         self.print_performance_report() # <--- สรุปผลตอนจบ
         print("[VISION] Stopped.")
 
     def _process_thread(self):
-        self.cap = cv2.VideoCapture(0)
-        self.cap.set(3, 640)
-        self.cap.set(4, 480)
+        """Loop ทำงานเบื้องหลัง (ไม่แสดงภาพ เพื่อประหยัด Resource)"""
+        # Use Picamera2 for Raspberry Pi Camera
+        use_picamera = False
+        try:
+            from picamera2 import Picamera2
+            self.cap = Picamera2()
+            config = self.cap.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"})
+            self.cap.configure(config)
+            self.cap.start()
+            use_picamera = True
+            print("[VISION] Using Picamera2")
+        except (ImportError, IndexError, RuntimeError) as e:
+            print(f"[VISION] Picamera2 not available ({e}), falling back to cv2.VideoCapture")
+            self.cap = cv2.VideoCapture(0)
+            if not self.cap.isOpened():
+                print("[VISION] ERROR: Cannot open camera with cv2.VideoCapture either!")
+                return
+            self.cap.set(3, 640)
+            self.cap.set(4, 480)
+            use_picamera = False
+        
         while self.running:
-            ret, frame = self.cap.read()
-            if not ret:
-                time.sleep(0.01)
-                continue
+            if use_picamera:
+                frame = self.cap.capture_array()
+            else:
+                ret, frame = self.cap.read()
+                if not ret:
+                    time.sleep(0.01)
+                    continue
             count, _ = self.detect_frame(frame, draw=False)
             self.person_detected = count
 
@@ -124,28 +152,58 @@ class PersonDetector:
 if __name__ == "__main__":
     print("Running Debug Mode... Press 'q' to stop.")
     detector = PersonDetector(model_path='yolo11n.pt') 
+
+    # Initialize camera (try Picamera2 first, fallback to cv2.VideoCapture)
+    use_picamera = False
+    try:
+        from picamera2 import Picamera2
+        cap = Picamera2()
+        config = cap.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"})
+        cap.configure(config)
+        cap.start()
+        use_picamera = True
+        print("Using Picamera2")
+    except (ImportError, IndexError, RuntimeError) as e:
+        print(f"Picamera2 not available ({e}), using cv2.VideoCapture")
+        cap = cv2.VideoCapture(0)
+        cap.set(3, 640)
+        cap.set(4, 480)
+        use_picamera = False
+        
+        if not cap.isOpened():
+            print("Error: Could not open camera.")
+            exit()
+
     detector.reset_stats()
-    
-    cap = cv2.VideoCapture(0)
-    cap.set(3, 640)
-    cap.set(4, 480)
 
     try:
         while True:
-            ret, frame = cap.read()
-            if not ret: break
+            # Capture frame
+            if use_picamera:
+                frame = cap.capture_array()
+            else:
+                ret, frame = cap.read()
+                if not ret: 
+                    print("Error: Failed to capture frame")
+                    break
+
+            # Detect and draw
+            person_count, output_frame = detector.detect_frame(frame, draw=True)
             
-            # เรียกใช้และเก็บสถิติ
-            count, out = detector.detect_frame(frame, draw=True)
-            
-            cv2.putText(out, f"Count: {count}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
-            cv2.imshow("Debug", out)
+            # Display result
+            status_text = f"Count: {person_count} PERSON(S)"
+            color = (0, 0, 255) if person_count > 0 else (0, 255, 0)
+            cv2.putText(output_frame, status_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            cv2.imshow("Debug Vision", output_frame)
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
     except KeyboardInterrupt:
         pass
     finally:
-        cap.release()
+        if use_picamera:
+            cap.stop()
+        else:
+            cap.release()
         cv2.destroyAllWindows()
         detector.print_performance_report()
