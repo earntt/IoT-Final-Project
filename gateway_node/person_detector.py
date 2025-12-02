@@ -138,15 +138,22 @@ class PersonDetector:
             use_picamera = False
         
         while self.running:
-            if use_picamera:
-                frame = self.cap.capture_array()
-            else:
-                ret, frame = self.cap.read()
-                if not ret:
-                    time.sleep(0.01)
-                    continue
-            count, _ = self.detect_frame(frame, draw=False)
-            self.person_detected = count
+            try:
+                if use_picamera:
+                    frame = self.cap.capture_array()
+                else:
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        time.sleep(0.1)
+                        continue
+                
+                count, _ = self.detect_frame(frame, draw=False)
+                self.person_detected = count
+                
+            except Exception as e:
+                print(f"[VISION] Error in detection loop: {e}")
+                time.sleep(0.5)
+                continue
 
 # --- Debug Mode ---
 if __name__ == "__main__":
