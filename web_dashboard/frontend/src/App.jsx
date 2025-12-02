@@ -19,24 +19,49 @@ export default function Dashboard() {
 
   // Simulate real-time data updates
   useEffect(() => {
-    const interval = setInterval(async () => {
-      const res = await fetch("http://localhost:8000/api/latest");
-      const json = await res.json();
-      console.log("Fetched:", json);
-      setData({
-        ...json,
-        button: Boolean(json.button),
-        abnormal_movement: Boolean(json.abnormal_movement),
-        sound_alert: Boolean(json.sound_alert),
-        person_present: Boolean(json.person_present)
-      });
-      
-      const resHistory = await fetch("http://localhost:8000/api/history");
-      const jsonHistory = await resHistory.json();
-      setHistory(jsonHistory);
-    }, 2000);
+    const fetchHistory = async () => {
+      try {
+        const res = await fetch("http://localhost:8000/api/history", { cache: "no-store" });
+        const json = await res.json();
+        setHistory(json.slice(0, 50)); // แสดง 50 ล่าสุด
+      } catch (err) {
+        console.error("Failed to fetch history", err);
+      }
+    };
 
-    return () => clearInterval(interval);
+    fetchHistory();
+
+    const ws = new WebSocket("ws://localhost:8000/ws");
+
+    ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    console.log("REALTIME:", msg);
+
+    if (!msg || !msg.timestamp || typeof msg.person_present === 'undefined') {
+        console.warn("Skipping incomplete WebSocket message:", msg);
+        return;
+    }
+    
+    const completeMsg = {
+        ...msg,
+        button: Boolean(msg.button),
+        abnormal_movement: Boolean(msg.abnormal_movement),
+        sound_alert: Boolean(msg.sound_alert),
+        person_present: Boolean(msg.person_present),
+        status: msg.status.toUpperCase()
+    };
+
+    setData(completeMsg);
+
+    setHistory(h => {
+      console.log("HISTORY UPDATE:", completeMsg);
+      if (h.length > 0 && h[0].timestamp === completeMsg.timestamp) return h;
+      return [completeMsg, ...h].slice(0, 50); // limit 50
+    });
+
+  };
+
+    return () => ws.close();
   }, []);
 
   const formatTime = (timestamp) => {
@@ -60,7 +85,7 @@ export default function Dashboard() {
 
     return (
       <span className={`px-3 py-1 rounded-full text-sm font-semibold ${style}`}>
-        {status.toUpperCase()}
+        {status}
       </span>
     );
   };
@@ -171,8 +196,8 @@ export default function Dashboard() {
         <DataCard
           icon={Power}
           title="Patient Status"
-          value={data.status.toUpperCase()}
-          alert={data.status.toUpperCase()}
+          value={data.status}
+          alert={data.status}
         />
       </div>
 
@@ -262,7 +287,7 @@ export default function Dashboard() {
                       key={index}
                       className={`hover:bg-gray-50 ${
                         entry.status === 'EMERGENCY' ? 'bg-red-50'
-                          : entry.status === 'WARNING'? 'bg-yellow-50'
+                          : entry.status.toUpperCase() === 'WARNING'? 'bg-yellow-50'
                           : ''
                       }`}
                     >
@@ -310,7 +335,7 @@ export default function Dashboard() {
                               NORMAL: 'bg-green-100 text-green-800',
                               WARNING: 'bg-yellow-100 text-yellow-800',
                               EMERGENCY: 'bg-red-100 text-red-800'
-                            }[entry.status] || 'bg-gray-100 text-gray-800'
+                            }[entry.status.toUpperCase()] || 'bg-gray-100 text-gray-800'
                           }`}
                         >
                           {entry.status.toUpperCase()}
